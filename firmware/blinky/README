@@ -1,0 +1,5 @@
+This example blink the blue led on the board :)
+
+!!! WARNING !!! flashing this firmware will soft brick your device.
+To unbrick, short out the SPI flash to boot into ROM mode and use the included
+flasher to restore the firmware.
