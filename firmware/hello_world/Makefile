@@ -7,14 +7,12 @@ CFLAGS = --Werror -mmcs51 --model-small
 LDFLAGS = -muwx -M -Y
 LDFLAGS += -b HOME=0xc006
 LDFLAGS += -b CSEG=0xc006
-LDFLAGS += -k /usr/bin/../share/sdcc/lib/small
 LDFLAGS += -k /usr/share/sdcc/lib/small
-LDFLAGS += -l libsdcc -l libint -l liblong -l libfloat
+LDFLAGS += -l libsdcc -l libint -l liblong
 
-RELS = main.rel header.rel bitbang_uart.rel
-CTR0_RELS = crt0/crtclear.rel crt0/crtstart.rel crt0/crtxinit.rel  crt0/crtxclear.rel
-BUILD_RELS = $(patsubst %,out/%,$(RELS))
-BUILD_RELS += $(patsubst crt0/%,out/%,$(CTR0_RELS))
+RELS = header.rel main.rel bitbang_uart.rel
+CTR0_RELS = crt0/crtclear.rel crt0/crtstart.rel crt0/crtxclear.rel crt0/crtxinit.rel
+BUILD_RELS = out/header.rel out/crtclear.rel out/crtstart.rel out/crtxclear.rel out/crtxinit.rel out/main.rel out/bitbang_uart.rel
 
 .PHONY: all clean
 all: out/hello.bin
@@ -31,8 +29,8 @@ out/%.rel: crt0/%.asm
 	@mkdir -p out
 	$(AS) -plosgff $@ $<
 
-out/hello.ihx: linker.lk $(BUILD_RELS)
-	$(LD) $(LDFLAGS) -i $@ $(BUILD_RELS)
+out/hello.ihx: $(BUILD_RELS)
+	$(LD) -i $@ $(LDFLAGS) $(BUILD_RELS)
 
 out/hello.bin: out/hello.ihx
 	$(OBJCOPY) -I ihex -O binary $< $@
