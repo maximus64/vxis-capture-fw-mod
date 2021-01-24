@@ -1,1 +1,3 @@
-flasher/vxis_flasher
+flasher/flasher
+flasher/i2c_vs9989
+flasher/*.o

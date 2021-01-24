@@ -20,33 +20,15 @@
  * IN THE SOFTWARE.
  */
 #include <getopt.h>
-#include <fcntl.h>
-#include <linux/usb/video.h>
-#include <linux/uvcvideo.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
 #include <unistd.h>
+#include "log.h"
+#include "vxis.h"
 
-#define DEBUG
-
-#ifdef DEBUG
-#define log_debug(fmt, args...) printf("[DEBUG] %s: %d: " fmt, __func__, __LINE__, ## args)
-#else
-#define log_debug(fmt, args...)
-#endif
-#define log_error(fmt, args...) fprintf(stderr, "[ERROR] %s: %d: " fmt, __func__, __LINE__, ## args)
-#define log_warn(fmt, args...) printf("[WARN] %s: %d: " fmt, __func__, __LINE__, ## args)
-#define log_info(fmt, args...) printf(fmt, ## args)
 #define ARRAY_SIZE(a) (sizeof(a) /sizeof(*(a)))
-
-typedef enum {
-    IC_INVALID,
-    IC_SPCA_2610,
-    IC_MAX
-} ic_type_t;
 
 typedef struct {
     const char *vendor;
@@ -70,330 +52,6 @@ static const flash_chip_t flash_info[] = {
 };
 static const int flash_info_count = ARRAY_SIZE(flash_info);
 
-static int g_uvc_fd;
-static ic_type_t g_curr_chip;
-static int g_ignore_ioctl_error;
-
-static int uvc_ctrl_get_len(uint8_t sel, uint16_t *len)
-{
-    int ret;
-    __u16 size = 0;
-
-    struct uvc_xu_control_query xquery = {
-        .query = UVC_GET_LEN,
-        .size = 2, /* size is always be 2 for the LEN query */
-        .selector = sel,
-        .unit = 0x4,
-        .data = (__u8 *)&size
-    };
-
-    ret = ioctl(g_uvc_fd, UVCIOC_CTRL_QUERY, &xquery);
-    if (ret < 0 && !g_ignore_ioctl_error) {
-        log_error("UVCIOC_CTRL_QUERY ioctl failed: %d\n", ret);
-        return 1;
-    }
-
-    *len = size;
-    return 0;
-}
-
-static int uvc_ctrl_get_cur(uint8_t sel, size_t sz, uint8_t *buf)
-{
-    int ret;
-    uint16_t ctrlen = 0;
-
-    struct uvc_xu_control_query xquery = {
-        .query = UVC_GET_CUR,
-        .size = sz,
-        .selector = sel,
-        .unit = 0x4,
-        .data = buf
-    };
-
-    ret = ioctl(g_uvc_fd, UVCIOC_CTRL_QUERY, &xquery);
-    if (ret < 0 && !g_ignore_ioctl_error) {
-        log_error("UVCIOC_CTRL_QUERY ioctl failed: %d\n", ret);
-        return 1;
-    }
-
-    return 0;
-}
-
-static int uvc_ctrl_set_cur(uint8_t sel, size_t sz, uint8_t *buf)
-{
-    int ret;
-    struct uvc_xu_control_query xquery = {
-        .query = UVC_SET_CUR,
-        .size = sz,
-        .selector = sel,
-        .unit = 0x4,
-        .data = buf
-    };
-
-    ret = ioctl(g_uvc_fd, UVCIOC_CTRL_QUERY, &xquery);
-    if (ret < 0 && !g_ignore_ioctl_error) {
-        log_error("UVCIOC_CTRL_QUERY ioctl failed: %d\n", ret);
-        return 1;
-    }
-
-    return 0;
-}
-
-static int flash_get_id(uint8_t chipid[3], uint8_t spicmd)
-{
-    int ret;
-    uint8_t cmd;
-
-    cmd = 0xd;
-
-    ret = uvc_ctrl_set_cur(7, 1, &cmd);
-    if (ret) {
-        log_error("send command failed\n");
-        return 1;
-    }
-
-    cmd = spicmd;
-    ret = uvc_ctrl_set_cur(8, 1, &cmd);
-    if (ret) {
-        log_error("send command failed\n");
-        return 1;
-    }
-
-    ret = uvc_ctrl_get_cur(0x17, 3, chipid);
-    if (ret) {
-        log_error("get data failed\n");
-        return 1;
-    }
-
-    return 0;
-}
-
-static int read_reg(uint16_t addr, uint8_t *val)
-{
-    int ret;
-    uint8_t u8addr[2] = {
-        addr & 0xff,
-        (addr >> 8) & 0xff
-    };
-    ret = uvc_ctrl_set_cur(2, 2, u8addr);
-    if (ret) {
-        log_error("send register addr failed\n");
-        return 1;
-    }
-
-    ret = uvc_ctrl_get_cur(3, 1, val);
-    if (ret) {
-        log_error("get register value failed\n");
-        return 1;
-    }
-
-    return 0;
-}
-
-static int write_reg(uint16_t addr, uint8_t val)
-{
-    int ret;
-    uint8_t u8addr[2] = {
-        addr & 0xff,
-        (addr >> 8) & 0xff
-    };
-    uint8_t tempval = val;
-
-    ret = uvc_ctrl_set_cur(2, 2, &u8addr[0]);
-    if (ret) {
-        log_error("send register addr failed\n");
-        return 1;
-    }
-
-    ret = uvc_ctrl_set_cur(3, 1, &tempval);
-    if (ret) {
-        log_error("set register value failed\n");
-        return 1;
-    }
-
-    return 0;
-}
-
-static int get_isp_status(uint8_t *val) {
-    int ret;
-
-    ret = uvc_ctrl_get_cur(9, 1, val);
-    if (ret) {
-        log_debug("get isp status failed\n");
-        return 1;
-    }
-
-    return 0;
-}
-
-static int enable_isp(void) {
-    int ret;
-    uint8_t status;
-
-    status = 0;
-    ret = get_isp_status(&status);
-    if (ret)
-        return ret;
-
-    if (status == 1) {
-        log_debug("ISP already enabled\n");
-        return 0;
-    }
-
-    status = 1;
-    ret = uvc_ctrl_set_cur(9, 1, &status);
-    if (ret) {
-        log_debug("set isp status failed\n");
-        return 1;
-    }
-
-    ret = get_isp_status(&status);
-    if (ret)
-        return ret;
-    if (status != 1) {
-        log_debug("ISP enable failed. status=0x%02x\n", status);
-        return 1;
-    }
-
-    return 0;
-}
-
-static const char* ic_type_to_str(ic_type_t type){
-    const char *str;
-
-    switch(type) {
-    case IC_SPCA_2610:
-        str = "SPCA_2610";
-        break;
-    default:
-        str = "Unknow IC";
-    }
-
-    return str;
-}
-
-static int detect_ic_type (ic_type_t *type) {
-    int ret;
-    uint8_t reg;
-
-    ret = read_reg(0x20ff, &reg);
-    if (ret) {
-        log_error("fail to read 0x20ff\n");
-        return 1;
-    }
-    log_debug("reg 0x20ff = %02x\n", reg);
-
-    if (reg & 0xf0) {
-        *type = IC_SPCA_2610;
-        return 0;
-    }
-    else {
-        *type = IC_INVALID;
-        return 0;
-    }
-}
-
-static int is_in_rom_mode(void) {
-    int ret;
-    uint8_t reg;
-
-    ret = read_reg(0x2517, &reg);
-    if (ret) {
-        log_error("fail to read 0x2517\n");
-        return 0;
-    }
-    log_debug("reg 0x2517 = %02x\n", reg);
-
-    if (reg == 0) {
-        return 1;
-    }
-    else {
-        return 0;
-    }
-}
-
-static int flash_erase_sector(uint32_t addr) {
-    int ret;
-    uint8_t u8addr[4] = {
-        addr & 0xff,
-        (addr >> 8) & 0xff,
-        (addr >> 16) & 0xff,
-        (addr >> 24) & 0xff,
-    };
-
-    ret = uvc_ctrl_set_cur(0xd, 4, &u8addr[0]);
-    if (ret) {
-        log_error("fail to erase. addr=0x%08x\n", addr);
-        return 1;
-    }
-
-    return 0;
-}
-
-static int flash_get_buffer_size(size_t *len) {
-    int ret;
-    uint16_t u16len = 0;
-
-    ret = uvc_ctrl_get_len(0xf, &u16len);
-    if (ret) {
-        log_error("failed to get flash buffer size\n");
-        return 1;
-    }
-
-    *len = u16len;
-    return 0;
-}
-
-static int flash_write(uint32_t addr, size_t sz, uint8_t *buf)
-{
-    int ret;
-    uint8_t u8addr[4] = {
-        addr & 0xff,
-        (addr >> 8) & 0xff,
-        (addr >> 16) & 0xff,
-        (addr >> 24) & 0xff,
-    };
-
-    ret = uvc_ctrl_set_cur(0xe, 4, &u8addr[0]);
-    if (ret) {
-        log_debug("fail to set address. addr=0x%08x\n", addr);
-        return 1;
-    }
-
-    ret = uvc_ctrl_set_cur(0xf, sz, buf);
-    if (ret) {
-        log_debug("write buffer failed. addr=0x%08x\n", addr);
-        return 1;
-    }
-
-    return 0;
-}
-
-static int flash_read (uint32_t addr, size_t sz, uint8_t *buf)
-{
-    int ret;
-    uint8_t u8addr[4] = {
-        addr & 0xff,
-        (addr >> 8) & 0xff,
-        (addr >> 16) & 0xff,
-        (addr >> 24) & 0xff,
-    };
-
-    ret = uvc_ctrl_set_cur(0xe, 4, &u8addr[0]);
-    if (ret) {
-        log_debug("fail to set address. addr=0x%08x\n", addr);
-        return 1;
-    }
-
-    ret = uvc_ctrl_get_cur(0xf, sz, buf);
-    if (ret) {
-        log_debug("read buffer failed. addr=0x%08x\n", addr);
-        return 1;
-    }
-
-    return 0;
-}
-
 static const flash_chip_t* flash_get_info(uint8_t manuid1, uint8_t manuid2, uint8_t deviceid)
 {
     int i;
@@ -412,13 +70,13 @@ static const flash_chip_t* flash_get_info(uint8_t manuid1, uint8_t manuid2, uint
     return NULL;
 }
 
-static int reset_to_rom(void) {
+static int reset_to_rom(ic_type_t ic) {
     int ret;
     uint8_t reg;
 
-    switch (g_curr_chip) {
+    switch (ic) {
     case IC_SPCA_2610:
-        ret = read_reg(0x2517, &reg);
+        ret = vxis_xdata_read(0x2517, &reg);
         if (ret) {
             log_error("fail to read 0x2517\n");
             return 1;
@@ -430,37 +88,35 @@ static int reset_to_rom(void) {
             log_debug("already in ROM mode\n");
         }
         else if (reg == 4) {
-            ret = read_reg(0x20eb, &reg);
-            ret |= write_reg(0x20eb, reg | 0x80);
+            ret = vxis_xdata_read(0x20eb, &reg);
+            ret |= vxis_xdata_write(0x20eb, reg | 0x80);
             if (ret) {
                 log_error("fail to set reg 0x20eb\n");
                 return 1;
             }
             /* erase first sector to force device into ROM mode */
-            ret = flash_erase_sector(0);
+            ret = vxis_flash_erase_sector(0);
             if (ret) {
                 log_error("flash erase failed\n");
                 return 1;
             }
             usleep(300000);
             /* Trigger reset */
-            read_reg(0x20e9, &reg);
-            write_reg(0x20e9, reg | 0x20);
-            write_reg(0x20f8, 0x01);
-            write_reg(0x20f5, 0xaa);
-            write_reg(0x20f6, 0x55);
+            vxis_xdata_read(0x20e9, &reg);
+            vxis_xdata_write(0x20e9, reg | 0x20);
+            vxis_xdata_write(0x20f8, 0x01);
+            vxis_xdata_write(0x20f5, 0xaa);
+            vxis_xdata_write(0x20f6, 0x55);
             /* Need to ignore error since device is resetting */
-            g_ignore_ioctl_error = 1;
-            write_reg(0x20f7, 0xa0);
-            g_ignore_ioctl_error = 0;
+            vxis_xdata_write_ignore_error(0x20f7, 0xa0);
         }
         else {
-            log_error("don't know what mode this chip is in 0x%02\n", reg);
+            log_error("don't know what mode this chip is in 0x%02x\n", reg);
             return 1;
         }
         break;
     default:
-        log_error("not supported chip 0x%x\n", g_curr_chip);
+        log_error("not supported chip 0x%x\n", ic);
         return 1;
     }
 
@@ -497,6 +153,7 @@ int main(int argc, char *argv[])
     const char* devpath = NULL;
     uint8_t flashid[3];
     uint8_t u8val;
+    ic_type_t ic;
 
     static const struct option long_options[] =
     {
@@ -527,7 +184,6 @@ int main(int argc, char *argv[])
             fpath = optarg;
             break;
         default:
-            printf("gfdgfd %d\n", c);
             print_usage(argv[0]);
         }
     }
@@ -548,9 +204,9 @@ int main(int argc, char *argv[])
     }
 
     /* open uvc device */
-    g_uvc_fd = open(devpath, O_RDWR | O_NONBLOCK, 0);
-    if (g_uvc_fd < 0) {
-        log_error("Can't open device\n");
+    ret = vxis_open(devpath);
+    if (ret) {
+        log_error("Can't open device %s\n", devpath);
         return EXIT_FAILURE;
     }
 
@@ -578,24 +234,24 @@ int main(int argc, char *argv[])
         }
     }
 
-    ret = detect_ic_type(&g_curr_chip);
+    ret = vxis_detect_ic(&ic);
     if (ret) {
         log_error("fail to detect ic\n");
         ret = EXIT_FAILURE;
         goto out;
     }
-    log_info("Detected: %s\n", ic_type_to_str(g_curr_chip));
-    if (g_curr_chip != IC_SPCA_2610) {
+    log_info("Detected: %s\n", vxis_ic2str(ic));
+    if (ic != IC_SPCA_2610) {
         log_error("ic not supported\n");
         ret = EXIT_FAILURE;
         goto out;
     }
 
-    if (is_in_rom_mode()) {
+    if (vxis_is_rom_mode()) {
         log_info("Chip is in ROM mode\n");
     }
 
-    ret = flash_get_id(flashid, 0x9f);
+    ret = vxis_flash_get_id(flashid, 0x9f);
     if (ret) {
         log_error("get flash id failed\n");
         ret = EXIT_FAILURE;
@@ -614,7 +270,7 @@ int main(int argc, char *argv[])
     log_info("Flash sector size: %u\n", fc->sector_size);
     log_info("Flash sector count: %u\n", fc->sector_count);
 
-    ret = get_isp_status(&u8val);
+    ret = vxis_get_isp_status(&u8val);
     if (ret) {
         log_error("get isp status failed\n");
         ret = EXIT_FAILURE;
@@ -629,7 +285,7 @@ int main(int argc, char *argv[])
 
     if (rom_mode) {
         log_info("Putting chip into ROM mode...\n");
-        ret = reset_to_rom();
+        ret = reset_to_rom(ic);
         if (ret) {
             printf("Fail to enter rom mode\n");
             ret = EXIT_FAILURE;
@@ -642,7 +298,7 @@ int main(int argc, char *argv[])
 
     if (read_mode || write_mode) {
         log_info("Enabling ISP...\n");
-        ret = enable_isp();
+        ret = vxis_enable_isp();
         if (ret) {
             log_info("Fail to enable ISP\n");
             ret = EXIT_FAILURE;
@@ -650,7 +306,7 @@ int main(int argc, char *argv[])
         }
 
         log_info("Getting flash buffer size...\n");
-        ret = flash_get_buffer_size(&fbuf_sz);
+        ret = vxis_flash_get_buffer_size(&fbuf_sz);
         if (ret) {
             log_error("Fail to get write buffer size\n");
             ret = EXIT_FAILURE;
@@ -673,7 +329,7 @@ int main(int argc, char *argv[])
         for (i = 0; i < flashsz ; i+= fbuf_sz)
         {
             log_info("Reading flash at %08x\n", i);
-            ret = flash_read(i, fbuf_sz, rdbuf);
+            ret = vxis_flash_read(i, fbuf_sz, rdbuf);
             if (ret) {
                 log_info("Read flash failed. addr=0x%08x\n", i);
                 free(rdbuf);
@@ -689,12 +345,19 @@ int main(int argc, char *argv[])
 
     if (erase_mode) {
         uint32_t erase_addr;
+        uint32_t sec;
+
+        if (!vxis_is_rom_mode()) {
+            log_error("Chip isn't in ROM mode. Please put chip in ROM mode with -m\n");
+            ret = EXIT_FAILURE;
+            goto out;
+        }
 
         log_info("Begin to erase flash...\n");
-        for (i=fc->sector_count-1; i>=0; i--) {
-            erase_addr = i * fc->sector_size;
-            log_info("Erasing sector %d (addr: 0x%08x)...\n", i, erase_addr);
-            ret = flash_erase_sector(erase_addr);
+        for (sec = 0; sec < fc->sector_count; sec++) {
+            erase_addr = sec * fc->sector_size;
+            log_info("Erasing sector %d (addr: 0x%08x)...\n", sec, erase_addr);
+            ret = vxis_flash_erase_sector(erase_addr);
             if (ret) {
                 log_error("!!!!Erase Failed!!!!\n");
                 ret = EXIT_FAILURE;
@@ -709,7 +372,7 @@ int main(int argc, char *argv[])
         uint32_t wraddr = 0;
         uint8_t *wrbuf;
 
-        if (!is_in_rom_mode()) {
+        if (!vxis_is_rom_mode()) {
             log_error("Chip isn't in ROM mode. Please put chip in ROM mode with -m\n");
             ret = EXIT_FAILURE;
             goto out;
@@ -734,9 +397,10 @@ int main(int argc, char *argv[])
                 free(wrbuf);
                 goto out;
             }
+            memset(&wrbuf[rlen], 0xff, fbuf_sz - rlen);
 
-            log_info("Writing to flash at 0x%08x, len %zu....\n", wraddr, rs);
-            ret = flash_write(wraddr, rs, wrbuf);
+            log_info("Writing to flash at 0x%08x\n", wraddr);
+            ret = vxis_flash_write(wraddr, fbuf_sz, wrbuf);
             if (ret) {
                 log_info("Write to flash failed\n");
                 ret = EXIT_FAILURE;
@@ -756,6 +420,6 @@ int main(int argc, char *argv[])
 out:
     if (fp)
         fclose(fp);
-    close(g_uvc_fd);
+    vxis_close();
     return ret;
 }
