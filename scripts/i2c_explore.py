@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import atexit, sys, os, struct, code, traceback, readline, rlcompleter, time
 import __main__
-from hexdump import hexdump
+from util import hexdump
 from pyftdi.ftdi import Ftdi
 from pyftdi.i2c import I2cController,I2cNackError
 
