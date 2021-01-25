@@ -67,13 +67,13 @@ static int vs9989_read_reg(uint8_t reg, uint8_t *val)
     uint8_t status = 0;
     
     //NOTE: will break if FW try to do i2c between these command
-    /*
-     * This is to enable the i2c port
-     */
+#if 0
+    /* This is to enable the i2c port. Seem to cause video to stop. Disable for now */
     if (vxis_xdata_write(0x2004, 0x34)) goto err;
     if (vxis_xdata_read(0x2790, &status)) goto err;
     status &= ~(1<<6); /* clear bit 6 */
     if (vxis_xdata_write(0x2790, 0xb1)) goto err;
+#endif
 
     if (vxis_xdata_write(0x2600, VS9989_I2C_SLAVE)) goto err;
     if (vxis_xdata_write(0x2601, 0x06)) goto err;
@@ -140,18 +140,23 @@ int main (int argc, char *argv[])
     switch (mode) {
     case 0: /* read */
         ret = vs9989_read_reg(addr, &value);
-        if (ret)
+        if (ret) {
+            vxis_close();
             return EXIT_FAILURE;
+        }
         printf("Value=%02x\n", value);
         break;
     case 1: /* write */
         ret = vs9989_write_reg(addr, value);
-        if (ret)
+        if (ret) {
+            vxis_close();
             return EXIT_FAILURE;
+        }
         break;
     default:
         break;
     }
 
+    vxis_close();
     return EXIT_SUCCESS;
 }
