@@ -1,10 +1,11 @@
-This example print "Hello World!" message out the "UART port" and then do loopback
-It used bitbang for TX and HW serial for the RX side. This is because I haven't
-able to find where the HW serial TX route to. Maybe there are some pinmux
-setting that needed to change.
+This example allows to read and write hardware registers and memory over serial.
+Related scripts:
+puppettrer.py can be used to send read/write command
+emulator.py emulate the original ROM using py8051 and forward all registers
+read + write to the device.
 
 baudrate: 9600
-TX pin:   blue led (left of audio port)
+TX pin:   blue led (left of the audio port)
 RX pin:   unpopulated header J2 pin 2.
 
 !!! WARNING !!! flashing this firmware will soft brick your device.
