@@ -1,3 +1,4 @@
 flasher/flasher
 flasher/i2c_vs9989
+flasher/xdata
 flasher/*.o

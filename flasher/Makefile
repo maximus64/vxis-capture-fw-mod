@@ -1,6 +1,6 @@
 CFLAGS += -O2 -Werror -Wextra
 
-all: flasher i2c_vs9989
+all: flasher i2c_vs9989 xdata
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -11,5 +11,8 @@ flasher: flasher.o vxis.o
 i2c_vs9989: i2c_vs9989.o vxis.o
 	$(CC) $(CFLAGS) -o $@ i2c_vs9989.o vxis.o
 
+xdata: xdata.o vxis.o
+	$(CC) $(CFLAGS) -o $@ xdata.o vxis.o
+
 clean:
-	rm -f flasher i2c_vs9989 *.o
+	rm -f flasher i2c_vs9989 xdata *.o
