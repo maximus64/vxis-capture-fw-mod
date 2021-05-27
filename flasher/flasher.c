@@ -48,6 +48,14 @@ static const flash_chip_t flash_info[] = {
         .sector_size    = 4096,
         .sector_count   = 16
     },
+    {
+        .vendor         = "Macronix",
+        .part           = "MX25L5121E",
+        .manufacture_id = 0xc222,
+        .device_id      = 0x10,
+        .sector_size    = 4096,
+        .sector_count   = 16
+    },
     {0}
 };
 static const int flash_info_count = ARRAY_SIZE(flash_info);
